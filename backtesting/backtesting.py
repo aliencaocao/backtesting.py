@@ -555,8 +555,8 @@ class Trade:
         self.__tp_order: Optional[Order] = None
         self.__tp_comment: Optional[str] = None
         self.__sl_comment: Optional[str] = None
-        self.__tag = tag
-        self.__comment = comment
+        self.__tag: SupportsRound = tag
+        self.__comment: str = comment
 
     def __repr__(self):
         return f'<Trade size={self.__size} time={self.__entry_bar}-{self.__exit_bar or ""} ' \
