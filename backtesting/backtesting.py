@@ -42,6 +42,13 @@ __pdoc__ = {
 }
 
 
+class __FULL_EQUITY(float):  # noqa: N801
+    def __repr__(self): return '.9999'
+
+
+_FULL_EQUITY = __FULL_EQUITY(1 - sys.float_info.epsilon)
+
+
 class Strategy(metaclass=ABCMeta):
     """
     A trading strategy base class. Extend this class and
@@ -55,6 +62,7 @@ class Strategy(metaclass=ABCMeta):
         self._broker: _Broker = broker
         self._data: _Data = data
         self._params = self._check_params(params)
+
 
     def __repr__(self):
         return '<Strategy ' + str(self) + '>'
@@ -191,9 +199,6 @@ class Strategy(metaclass=ABCMeta):
             super().next()
         """
 
-    class __FULL_EQUITY(float):  # noqa: N801
-        def __repr__(self): return '.9999'
-    _FULL_EQUITY = __FULL_EQUITY(1 - sys.float_info.epsilon)
 
     def buy(self, *,
             size: float = _FULL_EQUITY,
