@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union,
 
 import numpy as np
 import pandas as pd
+import tqdm
 from numpy.random import default_rng
 
 try:
@@ -1252,7 +1253,7 @@ class Backtest:
         # np.nan >= 3 is not invalid; it's False.
         with np.errstate(invalid='ignore'):
 
-            for i in range(start, len(self._data)):
+            for i in tqdm.tqdm(range(start, len(self._data))):
                 # Prepare data and indicators for `next` call
                 data._set_length(i + 1)
                 for attr, indicator in indicator_attrs:
