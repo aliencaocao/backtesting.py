@@ -16,7 +16,7 @@ from functools import lru_cache, partial
 from itertools import chain, compress, product, repeat
 from math import copysign
 from numbers import Number
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union, Any, SupportsRound
 
 import numpy as np
 import pandas as pd
@@ -200,7 +200,8 @@ class Strategy(metaclass=ABCMeta):
             stop: Optional[float] = None,
             sl: Optional[float] = None,
             tp: Optional[float] = None,
-            tag: object = None):
+            tag: SupportsRound = None,
+            comment: str = None):
         """
         Place a new long order. For explanation of parameters, see `Order` and its properties.
 
@@ -210,7 +211,7 @@ class Strategy(metaclass=ABCMeta):
         """
         assert 0 < size < 1 or round(size) == size, \
             "size must be a positive fraction of equity, or a positive whole number of units"
-        return self._broker.new_order(size, limit, stop, sl, tp, tag)
+        return self._broker.new_order(size, limit, stop, sl, tp, tag, comment)
 
     def sell(self, *,
              size: float = _FULL_EQUITY,
@@ -218,7 +219,8 @@ class Strategy(metaclass=ABCMeta):
              stop: Optional[float] = None,
              sl: Optional[float] = None,
              tp: Optional[float] = None,
-             tag: object = None):
+             tag: SupportsRound = None,
+             comment: str = None):
         """
         Place a new short order. For explanation of parameters, see `Order` and its properties.
 
@@ -230,7 +232,7 @@ class Strategy(metaclass=ABCMeta):
         """
         assert 0 < size < 1 or round(size) == size, \
             "size must be a positive fraction of equity, or a positive whole number of units"
-        return self._broker.new_order(-size, limit, stop, sl, tp, tag)
+        return self._broker.new_order(-size, limit, stop, sl, tp, tag, comment)
 
     @property
     def equity(self) -> float:
@@ -352,12 +354,12 @@ class Position:
         """True if the position is short (position size is negative)."""
         return self.size < 0
 
-    def close(self, portion: float = 1.):
+    def close(self, portion: float = 1., stop: float = None, limit: float = None, comment: str = None):
         """
         Close portion of position by closing `portion` of each active trade. See `Trade.close`.
         """
         for trade in self.__broker.trades:
-            trade.close(portion)
+            trade.close(portion, stop, limit, comment)
 
     def __repr__(self):
         return f'<Position: {self.size} ({len(self.__broker.trades)} trades)>'
@@ -389,7 +391,8 @@ class Order:
                  sl_price: Optional[float] = None,
                  tp_price: Optional[float] = None,
                  parent_trade: Optional['Trade'] = None,
-                 tag: object = None):
+                 tag: SupportsRound = None,
+                 comment: str = None):
         self.__broker = broker
         assert size != 0
         self.__size = size
@@ -399,6 +402,7 @@ class Order:
         self.__tp_price = tp_price
         self.__parent_trade = parent_trade
         self.__tag = tag
+        self.__comment = comment
 
     def _replace(self, **kwargs):
         for k, v in kwargs.items():
@@ -415,7 +419,7 @@ class Order:
                                                  ('tp', self.__tp_price),
                                                  ('contingent', self.is_contingent),
                                                  ('tag', self.__tag),
-                                             ) if value is not None))
+                                             ) if value is not None) + f', comment={self.__comment}')
 
     def cancel(self):
         """Cancel the order."""
@@ -489,7 +493,7 @@ class Order:
     @property
     def tag(self):
         """
-        Arbitrary value (such as a string) which, if set, enables tracking
+        A number (int or float or anything that supports rounding) which, if set, enables tracking
         of this order and the associated `Trade` (see `Trade.tag`).
         """
         return self.__tag
@@ -522,13 +526,24 @@ class Order:
         """
         return bool(self.__parent_trade)
 
+    @property
+    def comment(self):
+        """
+        A string comment associated with this order. This is different from tag as it can only carry a string while tag can only carry numbers (something that can be rounded).
+        """
+        return self.__comment
+
+    @comment.setter
+    def comment(self, value):
+        self.__comment = value
+
 
 class Trade:
     """
     When an `Order` is filled, it results in an active `Trade`.
     Find active trades in `Strategy.trades` and closed, settled trades in `Strategy.closed_trades`.
     """
-    def __init__(self, broker: '_Broker', size: int, entry_price: float, entry_bar, tag):
+    def __init__(self, broker: '_Broker', size: int, entry_price: float, entry_bar, tag: SupportsRound, comment: str):
         self.__broker = broker
         self.__size = size
         self.__entry_price = entry_price
@@ -537,7 +552,10 @@ class Trade:
         self.__exit_bar: Optional[int] = None
         self.__sl_order: Optional[Order] = None
         self.__tp_order: Optional[Order] = None
+        self.__tp_comment: Optional[str] = None
+        self.__sl_comment: Optional[str] = None
         self.__tag = tag
+        self.__comment = comment
 
     def __repr__(self):
         return f'<Trade size={self.__size} time={self.__entry_bar}-{self.__exit_bar or ""} ' \
@@ -552,12 +570,13 @@ class Trade:
     def _copy(self, **kwargs):
         return copy(self)._replace(**kwargs)
 
-    def close(self, portion: float = 1.):
+    def close(self, portion: float = 1., stop: float = None, limit: float = None, comment: str = None) -> Order:
         """Place new `Order` to close `portion` of the trade at next market price."""
         assert 0 < portion <= 1, "portion must be a fraction between 0 and 1"
         size = copysign(max(1, round(abs(self.__size) * portion)), -self.__size)
-        order = Order(self.__broker, size, parent_trade=self, tag=self.__tag)
+        order = Order(self.__broker, size, stop_price=stop, limit_price=limit, parent_trade=self, tag=self.__tag, comment=comment)
         self.__broker.orders.insert(0, order)
+        return order
 
     # Fields getters
 
@@ -601,6 +620,13 @@ class Trade:
         See also `Order.tag`.
         """
         return self.__tag
+
+    @property
+    def comment(self):
+        """
+        A string comment associated with this trade.
+        """
+        return self.__comment
 
     @property
     def _sl_order(self):
@@ -655,6 +681,17 @@ class Trade:
     # SL/TP management API
 
     @property
+    def sl_comment(self):
+        """Comment associated with the SL order."""
+        return self.__sl_comment
+
+    @sl_comment.setter
+    def sl_comment(self, comment: str):
+        self.__sl_comment = comment
+        if self.__sl_order:
+            self.__sl_order.comment = comment
+
+    @property
     def sl(self):
         """
         Stop-loss price at which to close the trade.
@@ -668,6 +705,17 @@ class Trade:
     @sl.setter
     def sl(self, price: float):
         self.__set_contingent('sl', price)
+
+    @property
+    def tp_comment(self):
+        """Comment associated with the TP order."""
+        return self.__tp_comment
+
+    @tp_comment.setter
+    def tp_comment(self, comment: str):
+        self.__tp_comment = comment
+        if self.__tp_order:
+            self.__tp_order.comment = comment
 
     @property
     def tp(self):
@@ -692,7 +740,7 @@ class Trade:
         if order:
             order.cancel()
         if price:
-            kwargs = {'stop': price} if type == 'sl' else {'limit': price}
+            kwargs = {'stop': price, 'comment': self.sl_comment} if type == 'sl' else {'limit': price, 'comment': self.tp_comment}
             order = self.__broker.new_order(-self.size, trade=self, tag=self.tag, **kwargs)
             setattr(self, attr, order)
 
@@ -728,7 +776,8 @@ class _Broker:
                   stop: Optional[float] = None,
                   sl: Optional[float] = None,
                   tp: Optional[float] = None,
-                  tag: object = None,
+                  tag: SupportsRound = None,
+                  comment: str = None,
                   *,
                   trade: Optional[Trade] = None):
         """
@@ -754,7 +803,7 @@ class _Broker:
                     "Short orders require: "
                     f"TP ({tp}) < LIMIT ({limit or stop or adjusted_price}) < SL ({sl})")
 
-        order = Order(self, size, limit, stop, sl, tp, trade, tag)
+        order = Order(self, size, limit, stop, sl, tp, trade, tag, comment)
         # Put the new order in the order queue,
         # inserting SL/TP/trade-closing orders in-front
         if trade:
@@ -780,7 +829,7 @@ class _Broker:
 
     def _adjusted_price(self, size=None, price=None) -> float:
         """
-        Long/short `price`, adjusted for commisions.
+        Long/short `price`, adjusted for commissions.
         In long positions, the adjusted price is a fraction higher, and vice versa.
         """
         return (price or self.last_price) * (1 + copysign(self._commission, size))
@@ -873,7 +922,7 @@ class _Broker:
                 size = copysign(min(abs(_prev_size), abs(order.size)), order.size)
                 # If this trade isn't already closed (e.g. on multiple `trade.close(.5)` calls)
                 if trade in self.trades:
-                    self._reduce_trade(trade, price, size, time_index)
+                    self._reduce_trade(trade, price, size, time_index, order.comment)
                     assert order.size != -_prev_size or trade not in self.trades
                 if order in (trade._sl_order,
                              trade._tp_order):
@@ -921,7 +970,7 @@ class _Broker:
                     else:
                         # The existing trade is larger than the new order,
                         # so it will only be closed partially
-                        self._reduce_trade(trade, price, need_size, time_index)
+                        self._reduce_trade(trade, price, need_size, time_index, order.comment)
                         need_size = 0
 
                     if not need_size:
@@ -939,7 +988,8 @@ class _Broker:
                                  order.sl,
                                  order.tp,
                                  time_index,
-                                 order.tag)
+                                 order.tag,
+                                 order.comment)
 
                 # We need to reprocess the SL/TP orders newly added to the queue.
                 # This allows e.g. SL hitting in the same bar the order was open.
@@ -965,7 +1015,7 @@ class _Broker:
         if reprocess_orders:
             self._process_orders()
 
-    def _reduce_trade(self, trade: Trade, price: float, size: float, time_index: int):
+    def _reduce_trade(self, trade: Trade, price: float, size: float, time_index: int, comment: str = None):
         assert trade.size * size < 0
         assert abs(trade.size) >= abs(size)
 
@@ -985,21 +1035,21 @@ class _Broker:
             close_trade = trade._copy(size=-size, sl_order=None, tp_order=None)
             self.trades.append(close_trade)
 
-        self._close_trade(close_trade, price, time_index)
+        self._close_trade(close_trade, price, time_index, comment)
 
-    def _close_trade(self, trade: Trade, price: float, time_index: int):
+    def _close_trade(self, trade: Trade, price: float, time_index: int, comment: str = None):
         self.trades.remove(trade)
         if trade._sl_order:
             self.orders.remove(trade._sl_order)
         if trade._tp_order:
             self.orders.remove(trade._tp_order)
 
-        self.closed_trades.append(trade._replace(exit_price=price, exit_bar=time_index))
+        self.closed_trades.append(trade._replace(exit_price=price, exit_bar=time_index, comment=f'{trade.comment}/{comment}'))
         self._cash += trade.pl
 
     def _open_trade(self, price: float, size: int,
-                    sl: Optional[float], tp: Optional[float], time_index: int, tag):
-        trade = Trade(self, size, price, time_index, tag)
+                    sl: Optional[float], tp: Optional[float], time_index: int, tag: SupportsRound, comment: str):
+        trade = Trade(self, size, price, time_index, tag, comment)
         self.trades.append(trade)
         # Create SL/TP (bracket) orders.
         # Make sure SL order is created first so it gets adversarially processed before TP order
@@ -1411,7 +1461,7 @@ class Backtest:
             try:
                 # If multiprocessing start method is 'fork' (i.e. on POSIX), use
                 # a pool of processes to compute results in parallel.
-                # Otherwise (i.e. on Windos), sequential computation will be "faster".
+                # Otherwise (i.e. on Windows), sequential computation will be "faster".
                 if mp.get_start_method(allow_none=False) == 'fork':
                     with ProcessPoolExecutor() as executor:
                         futures = [executor.submit(Backtest._mp_task, backtest_uuid, i)
