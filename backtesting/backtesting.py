@@ -889,20 +889,24 @@ class _Broker:
             # Determine purchase price.
             # Check if limit order can be filled.
             if order.limit:
-                is_limit_hit = low < order.limit if order.is_long else high > order.limit
+                is_limit_hit = low <= order.limit if order.is_long else high >= order.limit
                 # When stop and limit are hit within the same bar, we pessimistically
                 # assume limit was hit before the stop (i.e. "before it counts")
                 is_limit_hit_before_stop = (is_limit_hit and
-                                            (order.limit < (stop_price or -np.inf)
+                                            (order.limit <= (stop_price or -np.inf)
                                              if order.is_long
-                                             else order.limit > (stop_price or np.inf)))
+                                             else order.limit >= (stop_price or np.inf)))
                 if not is_limit_hit or is_limit_hit_before_stop:
                     continue
 
                 # stop_price, if set, was hit within this bar
-                price = (min(stop_price or open, order.limit)
-                         if order.is_long else
-                         max(stop_price or open, order.limit))
+                # price = (min(stop_price or open, order.limit)
+                #          if order.is_long else
+                #          max(stop_price or open, order.limit))
+                if is_limit_hit:
+                    price = order.limit
+                else:
+                    price = stop_price or open
             else:
                 # Market-if-touched / market order
                 price = prev_close if self._trade_on_close else open
