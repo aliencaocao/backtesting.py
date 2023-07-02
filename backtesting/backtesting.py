@@ -1090,7 +1090,8 @@ class Backtest:
                  margin: float = 1.,
                  trade_on_close=False,
                  hedging=False,
-                 exclusive_orders=False
+                 exclusive_orders=False,
+                 progress: bool = True
                  ):
         """
         Initialize a backtest. Requires data and a strategy to test.
@@ -1137,6 +1138,7 @@ class Backtest:
 
         [FIFO]: https://www.investopedia.com/terms/n/nfa-compliance-rule-2-43b.asp
         """
+        self.progress = progress
 
         if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
             raise TypeError('`strategy` must be a Strategy sub-type')
@@ -1262,7 +1264,8 @@ class Backtest:
         # np.nan >= 3 is not invalid; it's False.
         with np.errstate(invalid='ignore'):
 
-            for i in tqdm.tqdm(range(start, len(self._data))):
+            iterator = tqdm.tqdm(range(start, len(self._data))) if self.progress else range(start, len(self._data))
+            for i in iterator:
                 # Prepare data and indicators for `next` call
                 data._set_length(i + 1)
                 for attr, indicator in indicator_attrs:
